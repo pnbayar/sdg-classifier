@@ -41,6 +41,10 @@
   .ghost { background: transparent; color: var(--muted); border: 1px solid var(--border); font-weight: 500; }
   .hint { color: var(--muted); font-size: .875rem; }
   .model { margin-top: 16px; font-size: .875rem; color: var(--muted); }
+  .model { padding: 14px; background: var(--card); border: 1px solid var(--border); border-radius: 10px; }
+  .model:has(#downloadBox:not([hidden])) { border-color: var(--accent); }
+  .download-note { margin: 0 0 10px; color: var(--text); font-size: .95rem; }
+  #downloadBox + #modelText:empty { display: none; }
   .progress { height: 4px; background: var(--border); border-radius: 2px; margin-top: 6px; overflow: hidden; max-width: 320px; }
   .progress span { display: block; height: 100%; width: 0; background: var(--accent); transition: width .2s; }
   .status { margin-top: 20px; color: var(--muted); }
@@ -86,8 +90,12 @@
   </div>
 
   <div class="model" id="model">
-    <span id="modelText">Loading model… (the first visit downloads about 440 MB; later visits load it from your browser's cache)</span>
-    <div class="progress" id="progress"><span id="progressBar"></span></div>
+    <div id="downloadBox" hidden>
+      <p class="download-note">This tool runs the AI model on your own device. Download it once (about 440 MB) and your browser keeps it for future visits. A Wi-Fi connection is recommended.</p>
+      <button id="download">Download model (440 MB)</button>
+    </div>
+    <span id="modelText">Checking for a saved model…</span>
+    <div class="progress" id="progress" hidden><span id="progressBar"></span></div>
   </div>
 
   <div id="status" class="status" role="status"></div>
@@ -152,30 +160,70 @@ function onProgress(p) {
   }
 }
 
-const ready = (async () => {
-  const tokenizer = await AutoTokenizer.from_pretrained(MODEL_ID);
-  const model = await AutoModelForSequenceClassification.from_pretrained(MODEL_ID, {
-    dtype: MODEL_DTYPE, progress_callback: onProgress,
-  });
-  return { tokenizer, model };
-})();
+// The model is only downloaded when the visitor asks for it. Transformers.js stores
+// downloaded files in the browser's Cache Storage ("transformers-cache"), so a returning
+// visitor who already has it gets it loaded automatically.
+const MODEL_FILE_URL = `https://huggingface.co/${MODEL_ID}/resolve/main/onnx/model.onnx`;
+let ready = null;   // Promise of { tokenizer, model } once loading has started
 
-ready.then(() => {
-  $("modelText").textContent = "Model ready.";
-  $("progress").hidden = true;
-}).catch(err => {
-  console.error(err);
-  $("modelText").textContent = "";
-  $("progress").hidden = true;
-  setStatus("The model couldn't be loaded. Check your connection and reload the page.", true);
+async function isModelSaved() {
+  try {
+    const cache = await caches.open("transformers-cache");
+    return Boolean(await cache.match(MODEL_FILE_URL));
+  } catch {
+    return false;   // Cache Storage unavailable (e.g. some private windows)
+  }
+}
+
+function loadModel() {
+  if (ready) return ready;
+  $("downloadBox").hidden = true;
+  $("progress").hidden = false;
+  $("modelText").textContent = "Loading model…";
+  ready = (async () => {
+    const tokenizer = await AutoTokenizer.from_pretrained(MODEL_ID);
+    const model = await AutoModelForSequenceClassification.from_pretrained(MODEL_ID, {
+      dtype: MODEL_DTYPE, progress_callback: onProgress,
+    });
+    return { tokenizer, model };
+  })();
+  ready.then(() => {
+    $("modelText").textContent = "Model ready.";
+    $("progress").hidden = true;
+    if (statusEl.dataset.waiting) setStatus("");
+  }).catch(err => {
+    console.error(err);
+    ready = null;   // allow another try
+    $("progress").hidden = true;
+    $("modelText").textContent = "";
+    $("downloadBox").hidden = false;
+    $("download").textContent = "Try the download again";
+    setStatus("The model couldn't be downloaded. Check your connection and try again.", true);
+  });
+  return ready;
+}
+
+$("download").addEventListener("click", loadModel);
+
+// Saved already? Load it straight away. Otherwise wait for the visitor to choose to download.
+isModelSaved().then(saved => {
+  if (saved) loadModel();
+  else { $("modelText").textContent = ""; $("downloadBox").hidden = false; }
 });
 
 // ---- Classification ----
 async function classify() {
   const text = textEl.value.trim();
   if (!text) { setStatus("Enter some text first.", true); textEl.focus(); return; }
+  if (!ready) {
+    setStatus("Download the model first, using the button below the text box.", true);
+    statusEl.dataset.waiting = "1";
+    $("download").focus();
+    return;
+  }
 
   goBtn.disabled = true;
+  delete statusEl.dataset.waiting;
   resultsEl.innerHTML = "";
   setStatus("Classifying…", false, true);
 
