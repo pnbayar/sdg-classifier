@@ -1,0 +1,229 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SDG Classifier</title>
+<meta name="description" content="Tag text with the UN Sustainable Development Goals it relates to. Runs entirely in your browser.">
+<style>
+  :root {
+    --bg: #f6f7f9; --card: #ffffff; --text: #1d2330; --muted: #5d6778;
+    --border: #dde1e8; --accent: #19486a; --accent-text: #ffffff; --error: #b42318;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #12151b; --card: #1b2029; --text: #e6e9ef; --muted: #9aa3b2;
+      --border: #2c3340; --accent: #4f8fc0; --accent-text: #0b1016; --error: #f97066;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 16px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  main { max-width: 820px; margin: 0 auto; padding: 40px 16px 64px; }
+  h1 { margin: 0 0 4px; font-size: 1.75rem; }
+  .sub { margin: 0 0 24px; color: var(--muted); }
+  .wheel { display: flex; gap: 3px; margin-bottom: 20px; }
+  .wheel span { flex: 1; height: 6px; border-radius: 3px; }
+  textarea {
+    width: 100%; min-height: 160px; padding: 14px; resize: vertical;
+    background: var(--card); color: var(--text);
+    border: 1px solid var(--border); border-radius: 10px; font: inherit;
+  }
+  textarea:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
+  .row { display: flex; align-items: center; gap: 12px; margin-top: 12px; flex-wrap: wrap; }
+  button {
+    padding: 10px 22px; border: 0; border-radius: 8px; cursor: pointer;
+    background: var(--accent); color: var(--accent-text); font: inherit; font-weight: 600;
+  }
+  button:disabled { opacity: .6; cursor: progress; }
+  .ghost { background: transparent; color: var(--muted); border: 1px solid var(--border); font-weight: 500; }
+  .hint { color: var(--muted); font-size: .875rem; }
+  .model { margin-top: 16px; font-size: .875rem; color: var(--muted); }
+  .progress { height: 4px; background: var(--border); border-radius: 2px; margin-top: 6px; overflow: hidden; max-width: 320px; }
+  .progress span { display: block; height: 100%; width: 0; background: var(--accent); transition: width .2s; }
+  .status { margin-top: 20px; color: var(--muted); }
+  .status.error { color: var(--error); }
+  .results { display: grid; gap: 12px; margin-top: 24px; }
+  .goal {
+    display: grid; grid-template-columns: 64px 1fr; gap: 14px;
+    background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 14px;
+  }
+  .badge {
+    width: 64px; height: 64px; border-radius: 8px; color: #fff;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    font-weight: 700; line-height: 1;
+  }
+  .badge small { font-size: .65rem; letter-spacing: .08em; opacity: .9; }
+  .badge b { font-size: 1.6rem; margin-top: 2px; }
+  .goal h2 { margin: 0; font-size: 1.05rem; }
+  .bar { height: 6px; background: var(--border); border-radius: 3px; margin: 8px 0 4px; overflow: hidden; }
+  .bar span { display: block; height: 100%; border-radius: 3px; }
+  .score { font-size: .8rem; color: var(--muted); }
+  .goal p { margin: 8px 0 0; font-size: .95rem; }
+  footer { margin-top: 48px; font-size: .8rem; color: var(--muted); }
+  footer a { color: inherit; }
+  .spinner {
+    display: inline-block; width: 14px; height: 14px; margin-right: 8px; vertical-align: -2px;
+    border: 2px solid var(--border); border-top-color: var(--accent); border-radius: 50%;
+    animation: spin .8s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+</style>
+</head>
+<body>
+<main>
+  <div class="wheel" id="wheel"></div>
+  <h1>SDG Classifier</h1>
+  <p class="sub">Paste a project description, abstract or policy text to see which UN Sustainable Development Goals it relates to. The model currently recognises 11 of the 17 goals (1, 2, 4, 5, 6, 7, 9, 10, 11, 12, 13).</p>
+
+  <textarea id="text" placeholder="e.g. Encouraging young women to pursue careers in engineering and technology."></textarea>
+  <div class="row">
+    <button id="go">Classify</button>
+    <button id="clear" class="ghost">Clear</button>
+    <span class="hint">Ctrl + Enter to classify</span>
+  </div>
+
+  <div class="model" id="model">
+    <span id="modelText">Loading model…</span>
+    <div class="progress" id="progress"><span id="progressBar"></span></div>
+  </div>
+
+  <div id="status" class="status" role="status"></div>
+  <div id="results" class="results"></div>
+
+  <footer>
+    Runs entirely in your browser: your text is never sent to a server. The model is downloaded once and cached.
+    Model: <a href="https://huggingface.co/PraveenNIPE/sdg-classifier">PraveenNIPE/sdg-classifier</a> (fine-tuned BERT).
+  </footer>
+</main>
+
+<script type="module">
+import { AutoTokenizer, AutoModelForSequenceClassification } from "https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.0.2";
+
+const MODEL_ID = "PraveenNIPE/sdg-classifier";
+const MODEL_DTYPE = "fp16";   // loads onnx/model_fp16.onnx
+const THRESHOLD = 0.3;
+
+const SDGS = {
+  1: ["No Poverty", "#E5243B", "End poverty in all its forms everywhere."],
+  2: ["Zero Hunger", "#DDA63A", "End hunger, achieve food security and improved nutrition and promote sustainable agriculture."],
+  3: ["Good Health and Well-being", "#4C9F38", ""],
+  4: ["Quality Education", "#C5192D", "Ensure inclusive and equitable quality education and promote lifelong learning opportunities for all."],
+  5: ["Gender Equality", "#FF3A21", "Achieve gender equality and empower all women and girls."],
+  6: ["Clean Water and Sanitation", "#26BDE2", "Ensure availability and sustainable management of water and sanitation for all."],
+  7: ["Affordable and Clean Energy", "#FCC30B", "Ensure access to affordable, reliable, sustainable and modern energy for all."],
+  8: ["Decent Work and Economic Growth", "#A21942", ""],
+  9: ["Industry, Innovation and Infrastructure", "#FD6925", "Build resilient infrastructure, promote inclusive and sustainable industrialization and foster innovation."],
+  10: ["Reduced Inequalities", "#DD1367", "Reduce inequality within and among countries."],
+  11: ["Sustainable Cities and Communities", "#FD9D24", "Make cities and human settlements inclusive, safe, resilient and sustainable."],
+  12: ["Responsible Consumption and Production", "#BF8B2E", "Ensure sustainable consumption and production patterns."],
+  13: ["Climate Action", "#3F7E44", "Take urgent action to combat climate change and its impacts."],
+  14: ["Life Below Water", "#0A97D9", ""],
+  15: ["Life on Land", "#56C02B", ""],
+  16: ["Peace, Justice and Strong Institutions", "#00689D", ""],
+  17: ["Partnerships for the Goals", "#19486A", ""],
+};
+
+const $ = id => document.getElementById(id);
+const textEl = $("text"), goBtn = $("go"), statusEl = $("status"), resultsEl = $("results");
+
+$("wheel").innerHTML = Object.values(SDGS).map(([, c]) => `<span style="background:${c}"></span>`).join("");
+
+function setStatus(msg, isError = false, busy = false) {
+  statusEl.className = "status" + (isError ? " error" : "");
+  statusEl.innerHTML = (busy ? '<span class="spinner"></span>' : "") + msg;
+}
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+
+// ---- Model loading (starts immediately; cached by the browser after the first visit) ----
+const fileProgress = {};
+function onProgress(p) {
+  if (p.status === "progress" && p.total) {
+    fileProgress[p.file] = [p.loaded, p.total];
+    const [loaded, total] = Object.values(fileProgress).reduce((a, [l, t]) => [a[0] + l, a[1] + t], [0, 0]);
+    $("progressBar").style.width = (100 * loaded / total).toFixed(1) + "%";
+    $("modelText").textContent = `Downloading model… ${(loaded / 1e6).toFixed(0)} / ${(total / 1e6).toFixed(0)} MB (only on the first visit)`;
+  }
+}
+
+const ready = (async () => {
+  const tokenizer = await AutoTokenizer.from_pretrained(MODEL_ID);
+  const model = await AutoModelForSequenceClassification.from_pretrained(MODEL_ID, {
+    dtype: MODEL_DTYPE, progress_callback: onProgress,
+  });
+  return { tokenizer, model };
+})();
+
+ready.then(() => {
+  $("modelText").textContent = "Model ready.";
+  $("progress").hidden = true;
+}).catch(err => {
+  console.error(err);
+  $("modelText").textContent = "";
+  $("progress").hidden = true;
+  setStatus("The model couldn't be loaded. Check your connection and reload the page.", true);
+});
+
+// ---- Classification ----
+async function classify() {
+  const text = textEl.value.trim();
+  if (!text) { setStatus("Enter some text first.", true); textEl.focus(); return; }
+
+  goBtn.disabled = true;
+  resultsEl.innerHTML = "";
+  setStatus("Classifying…", false, true);
+
+  try {
+    const { tokenizer, model } = await ready;
+    const inputs = await tokenizer(text, { truncation: true, max_length: 512 });
+    const { logits } = await model(inputs);
+    const id2label = model.config.id2label;
+
+    // Multi-label: an independent sigmoid score for each goal
+    const goals = Array.from(logits.data, (z, i) => ({
+      sdg: Number(/SDG (\d+)/.exec(id2label[i])[1]),
+      score: 1 / (1 + Math.exp(-z)),
+    })).filter(g => g.score > THRESHOLD).sort((a, b) => b.score - a.score);
+
+    render(goals);
+  } catch (e) {
+    console.error(e);
+    setStatus("Something went wrong while classifying. Reload the page and try again.", true);
+  } finally {
+    goBtn.disabled = false;
+  }
+}
+
+function render(goals) {
+  if (!goals.length) {
+    setStatus("No goal scored above the threshold. Try a longer or more specific description.");
+    return;
+  }
+  setStatus(`${goals.length} matching goal${goals.length > 1 ? "s" : ""}`);
+  resultsEl.innerHTML = goals.map(({ sdg, score }) => {
+    const [name, color, statement] = SDGS[sdg];
+    const pct = Math.round(score * 100);
+    return `
+      <article class="goal">
+        <div class="badge" style="background:${color}"><small>SDG</small><b>${sdg}</b></div>
+        <div>
+          <h2>${escapeHtml(name)}</h2>
+          <div class="bar"><span style="width:${pct}%;background:${color}"></span></div>
+          <div class="score">Confidence ${pct}%</div>
+          ${statement ? `<p>${escapeHtml(statement)}</p>` : ""}
+        </div>
+      </article>`;
+  }).join("");
+}
+
+goBtn.addEventListener("click", classify);
+$("clear").addEventListener("click", () => { textEl.value = ""; resultsEl.innerHTML = ""; setStatus(""); textEl.focus(); });
+textEl.addEventListener("keydown", e => { if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) classify(); });
+</script>
+</body>
+</html>
