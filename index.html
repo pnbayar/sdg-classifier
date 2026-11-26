@@ -86,7 +86,7 @@
   </div>
 
   <div class="model" id="model">
-    <span id="modelText">Loading model…</span>
+    <span id="modelText">Loading model… (the first visit downloads about 440 MB; later visits load it from your browser's cache)</span>
     <div class="progress" id="progress"><span id="progressBar"></span></div>
   </div>
 
@@ -103,7 +103,8 @@
 import { AutoTokenizer, AutoModelForSequenceClassification } from "https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.0.2";
 
 const MODEL_ID = "PraveenNIPE/sdg-classifier";
-const MODEL_DTYPE = "fp16";   // loads onnx/model_fp16.onnx
+// Full precision (onnx/model.onnx). 8-bit versions changed the predicted goals, so they are not used.
+const MODEL_DTYPE = "fp32";
 const THRESHOLD = 0.3;
 
 const SDGS = {
